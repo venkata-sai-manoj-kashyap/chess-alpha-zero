@@ -9,7 +9,7 @@ from logging import getLogger
 from multiprocessing import Manager
 from threading import Thread
 from time import time
-
+from copy import deepcopy
 from chess_zero.agent.model_chess import ChessModel
 from chess_zero.agent.player_chess import ChessPlayer
 from chess_zero.config import Config
@@ -55,7 +55,8 @@ class SelfPlayWorker:
 
         futures = deque()
         with ProcessPoolExecutor(max_workers=self.config.play.max_processes) as executor:
-            for game_idx in range(self.config.play.max_processes * 2):
+            # for game_idx in range(self.config.play.max_processes * 2):
+            for game_idx in range(1):
                 futures.append(executor.submit(self_play_buffer, self.config, cur=self.cur_pipes))
             game_idx = 0
             while True:
@@ -121,25 +122,70 @@ def self_play_buffer(config, cur) -> (ChessEnv, list):
     """
     pipes = cur.pop() # borrow
     env = ChessEnv().reset()
+    # EDIT CODE HERE TO CHANGE THE ENVIRONMENT
 
     white = ChessPlayer(config, pipes=pipes)
     black = ChessPlayer(config, pipes=pipes)
-
+    move = 0
+    failed_play = 0
+    total_failed_plays = 0
+    print("Match Started")
+    moves_list = ""
     while not env.done:
+        # CHANGES_MADE_HERE
+        temp = deepcopy(env)
+        black_pieces = set("prnbqk")
+        white_pieces = set("PRNBQK")
+
         if env.white_to_move:
-            action = white.action(env)
+            x = temp.board.piece_map()
+            for i in x:
+                if str(x[i]) in black_pieces:
+                    temp.board.remove_piece_at(i)
+            action = white.action(temp)
         else:
-            action = black.action(env)
-        env.step(action)
-        if env.num_halfmoves >= config.play.max_game_length:
-            env.adjudicate()
+            x = temp.board.piece_map()
+            for i in x:
+                if str(x[i]) in white_pieces:
+                    temp.board.remove_piece_at(i)
+            action = black.action(temp)
+        print("Match in Progress: ", move, "Moves made in the game, Failed Plays: ", total_failed_plays, end='\r')
+        try:
+            env.step(action)
+            moves_list += action + ', '
+            failed_play = 0
+            move += 1
+            if env.num_halfmoves >= config.play.max_game_length:
+                env.adjudicate()
+        except ValueError:
+            failed_play += 1
+            total_failed_plays += 1
+            if failed_play == 50:
+                logger.warning("\nEnding the Game due to lack of development")
+                env.adjudicate()
+            continue
+
+        # END_OF_CHANGES
+    with open("result.csv", "a+") as fp:
+        result = str(move) + ", "+ str(total_failed_plays) + ", " + str(env.winner) + ", <" + env.board.fen()
+        result += ">, Adjudicated\n" if failed_play == 50 else ">, Game End\n"
+        fp.write(result)
+        fp.close()
+
+    with open("moves_list.csv", "a+") as fp:
+        fp.write(moves_list)
+        fp.write("\n")
+        fp.close()
 
     if env.winner == Winner.white:
         black_win = -1
+        logger.info("White wins")
     elif env.winner == Winner.black:
         black_win = 1
+        logger.info("Black wins")
     else:
         black_win = 0
+        logger.info("Draw Match")
 
     black.finish_game(black_win)
     white.finish_game(-black_win)
